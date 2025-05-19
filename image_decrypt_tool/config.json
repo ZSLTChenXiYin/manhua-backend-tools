@@ -1,14 +1,16 @@
 {
   "input_dir": "D:/workspace/cartoon/1139",
-  "output_dir": "./1",
+  "output_dir": "1",
 
-  "info_log": "./info.log",
-  "error_log": "./error.log",
+  "info_log": "info.log",
+  "error_log": "error.log",
 
   "key": "3VLHgbkFN0ebMaR4e0Dz6Z2m",
   "iv": "FexPBFKG",
 
-  "cpu_num": 8,
+  "cpu_num": 0,
 
-  "coroutine": 12
+  "coroutine": 0,
+
+  "cache_file": "decrypt.cache"
 }
