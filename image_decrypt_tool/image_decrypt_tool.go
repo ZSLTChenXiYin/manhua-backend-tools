@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,7 +34,7 @@ type Config struct {
 	InputDir  string `json:"input_dir"`
 	OutputDir string `json:"output_dir"`
 
-	InfoLog  string `json:"info_log"`
+	// InfoLog  string `json:"info_log"`
 	ErrorLog string `json:"error_log"`
 
 	Key string `json:"key"`
@@ -47,7 +48,7 @@ type Config struct {
 }
 
 var (
-	info_log  = log.New(os.Stdout, STD_INFO_PREFIX+" ", log.LstdFlags)
+	// info_log  = log.New(os.Stdout, STD_INFO_PREFIX+" ", log.LstdFlags)
 	error_log = log.New(os.Stderr, STD_ERROR_PREFIX+" ", log.LstdFlags)
 
 	cacheMutex sync.Mutex
@@ -56,6 +57,8 @@ var (
 	cacheBuffer     []string
 	// 定义批量写入的阈值
 	batchSize = 1000
+
+	pathHeaderWritten = false
 )
 
 func main() {
@@ -66,17 +69,19 @@ func main() {
 	}
 	fmt.Println(STD_INFO_PREFIX, "读取配置文件成功")
 
-	if config.InfoLog != "" {
-		file, err := os.OpenFile(config.InfoLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-		if err != nil {
-			fmt.Println(STD_ERROR_PREFIX, "打开INFO日志文件失败，使用标准输出: ", err.Error())
-		} else {
-			defer file.Close()
-			info_log.SetOutput(file)
-			info_log.SetPrefix(INFO_PREFIX + " ")
-			fmt.Println(STD_INFO_PREFIX, "日志文件INFO设置成功")
+	/*
+		if config.InfoLog != "" {
+			file, err := os.OpenFile(config.InfoLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+			if err != nil {
+				fmt.Println(STD_ERROR_PREFIX, "打开INFO日志文件失败，使用标准输出: ", err.Error())
+			} else {
+				defer file.Close()
+				info_log.SetOutput(file)
+				info_log.SetPrefix(INFO_PREFIX + " ")
+				fmt.Println(STD_INFO_PREFIX, "日志文件INFO设置成功")
+			}
 		}
-	}
+	*/
 
 	if config.ErrorLog != "" {
 		file, err := os.OpenFile(config.ErrorLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -96,7 +101,13 @@ func main() {
 	}
 	fmt.Println(STD_INFO_PREFIX, "缓存文件打开成功")
 
-	processedFiles := readProcessedFiles(config.CacheFile)
+	processedFiles, cacheBaseDir := readProcessedFiles(config.CacheFile)
+
+	// 对比配置文件中的输入目录和 cache 文件中的文件头
+	if cacheBaseDir != "" && config.InputDir != cacheBaseDir {
+		fmt.Println(STD_ERROR_PREFIX, "配置文件中的输入目录与缓存文件中的文件头不匹配")
+		return
+	}
 
 	des := xdes.NewTripleDes(config.Key, config.IV)
 
@@ -120,7 +131,7 @@ func main() {
 
 	fmt.Println(STD_INFO_PREFIX, "解密后数据的体积约为源数据的3/4")
 
-	info_log.Println("开始解密")
+	// info_log.Println("开始解密")
 
 	start_time := time.Now()
 
@@ -130,7 +141,8 @@ func main() {
 		}
 		if !info.IsDir() && filepath.Ext(path) == ".webp" {
 			if _, exists := processedFiles[path]; exists {
-				info_log.Println("跳过已处理文件: ", path)
+				// info_log.Println("跳过已处理文件: ", path)
+				delete(processedFiles, path)
 				return nil
 			}
 
@@ -150,12 +162,13 @@ func main() {
 				err = decryptFile(inputPath, outputPath, des)
 				if err != nil {
 					error_log.Println("解密文件失败: ", inputPath, " ", err.Error())
+					return
 				}
 
-				// 写入相对路径到缓存文件
-				recordProcessedFile(config.CacheFile, inputPath)
+				// 修改调用 recordProcessedFile 的参数
+				recordProcessedFile(config.CacheFile, inputPath, config.InputDir)
 
-				info_log.Println("解密文件成功: ", inputPath, " -> ", outputPath)
+				// info_log.Println("解密文件成功: ", inputPath, " -> ", outputPath)
 			}(path)
 		}
 		return nil
@@ -172,7 +185,7 @@ func main() {
 
 	elapsed_time := time.Since(start_time).Seconds()
 
-	info_log.Println("解密完成")
+	// info_log.Println("解密完成")
 
 	fmt.Println(STD_INFO_PREFIX, "解密完成，本次解密总耗时:", elapsed_time, "秒")
 }
@@ -229,29 +242,50 @@ func decryptFile(inputPath, outputPath string, des *xdes.TripleDES) error {
 	return err
 }
 
-// 读取已处理的文件列表
-func readProcessedFiles(cache_file string) map[string]bool {
-	processedFiles := make(map[string]bool)
+// 修改 readProcessedFiles 函数，读取到文件头后设置 pathHeaderWritten 为 true
+func readProcessedFiles(cache_file string) (map[string]struct{}, string) {
+	processedFiles := make(map[string]struct{})
+	var baseDir string
 	file, err := os.Open(cache_file)
 	if err != nil {
-		return processedFiles
+		return processedFiles, ""
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	firstLine := true
 	for scanner.Scan() {
-		processedFiles[scanner.Text()] = true
+		line := scanner.Text()
+		if firstLine {
+			baseDir = line
+			firstLine = false
+			pathHeaderWritten = true // 设置 pathHeaderWritten 为 true
+			continue
+		}
+		relPath := strings.TrimPrefix(line, "\t")
+		fullPath := filepath.Join(baseDir, relPath)
+		processedFiles[fullPath] = struct{}{}
 	}
 
-	return processedFiles
+	return processedFiles, baseDir
 }
 
-// 记录已处理的文件
-func recordProcessedFile(cacheFile, filePath string) {
+// recordProcessedFile 函数保持不变，因为已经在 readProcessedFiles 中设置了 pathHeaderWritten
+func recordProcessedFile(cacheFile, inputPath, inputDir string) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
-	cacheBuffer = append(cacheBuffer, filePath)
+	relPath, err := filepath.Rel(inputDir, inputPath)
+	if err != nil {
+		error_log.Println("获取相对路径失败: ", inputPath, " ", err.Error())
+		return
+	}
+
+	if !pathHeaderWritten {
+		cacheBuffer = append(cacheBuffer, inputDir+"\n")
+		pathHeaderWritten = true
+	}
+	cacheBuffer = append(cacheBuffer, "\t"+relPath+"\n")
 	if len(cacheBuffer) >= batchSize {
 		flushCacheBuffer()
 	}
@@ -264,7 +298,7 @@ func flushCacheBuffer() {
 	}
 
 	for _, path := range cacheBuffer {
-		if _, err := cacheFileWriter.WriteString(path + "\n"); err != nil {
+		if _, err := cacheFileWriter.WriteString(path); err != nil {
 			error_log.Println("写入缓存文件失败: ", err.Error())
 		}
 	}
